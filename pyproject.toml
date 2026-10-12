@@ -1,0 +1,31 @@
+[project]
+name = "mstodo-mcp"
+version = "0.1.0"
+description = "Microsoft To Do for personal accounts as a stdio MCP server and CLI"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Benedikt Reiser" }]
+keywords = ["mcp", "microsoft-todo", "microsoft-graph", "todo"]
+classifiers = [
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Scheduling",
+]
+requires-python = ">=3.10"
+dependencies = ["mcp>=2.3,<3"]
+
+[project.urls]
+Repository = "https://github.com/burnedikt/mstodo-mcp"
+
+[project.scripts]
+mstodo-mcp = "mstodo_mcp.server:main"
+mstodo = "mstodo_mcp.mstodo:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv]
+# `uvx --from <path>` otherwise only rebuilds when pyproject.toml changes.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/**/*.py" }]
