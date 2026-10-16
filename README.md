@@ -1,5 +1,7 @@
 # mstodo-mcp
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/burnedikt-mstodo-mcp-iv8sc2?v=bfd0739e7c7a870b1a888d0217d51b8b)](https://m8ven.ai/mcp/burnedikt-mstodo-mcp-iv8sc2?s=readme)
+
 Microsoft To Do for a personal Microsoft account, through Microsoft Graph:
 
 - `mstodo-mcp`: a stdio [MCP](https://modelcontextprotocol.io) server with the
