@@ -9,6 +9,7 @@ functions.
     mstodo login                         # one-time device-code sign-in
     mstodo lists
     mstodo tasks [--list NAME] [--all]
+    mstodo my-day [--all]
     mstodo add "Title" [--list NAME] [--create-list] [--due YYYY-MM-DD]
                        [--remind "YYYY-MM-DD HH:MM"] [--note TEXT] [--important]
     mstodo complete TASK_ID --list NAME
@@ -20,9 +21,13 @@ personal accounts with delegated Tasks.ReadWrite; defaults to Microsoft's
 "Microsoft Graph Command Line Tools"). The refresh token is cached in
 ~/.config/mstodo/token.json (mode 600). MSTODO_CONFIG_DIR moves both.
 Dates and reminders use MSTODO_TIMEZONE, else the local IANA time zone.
+
+Graph does not expose My Day, so `my-day` reads it from the undocumented API
+that the To Do apps use. Microsoft may change that API without notice.
 """
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -30,11 +35,18 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zoneinfo
 from pathlib import Path
 
 AUTHORITY = "https://login.microsoftonline.com/consumers/oauth2/v2.0"
 GRAPH = "https://graph.microsoft.com/v1.0"
+# The To Do apps' own API. Undocumented; it takes the same list and task ids
+# as Graph, and a token for outlook.office.com instead of Graph.
+TODO_API = "https://substrate.office.com/todob2/api/v1"
 SCOPES = "Tasks.ReadWrite offline_access"
+TODO_SCOPES = "https://outlook.office.com/Tasks.ReadWrite offline_access"
+# One sign-in consents to both APIs; access tokens are then issued per API.
+LOGIN_SCOPES = f"https://graph.microsoft.com/Tasks.ReadWrite {TODO_SCOPES}"
 
 
 def local_timezone():
@@ -78,7 +90,6 @@ def post_form(url, fields):
 
 def save_token(tok):
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    tok["expires_at"] = time.time() + int(tok.get("expires_in", 3600)) - 60
     tmp = TOKEN_FILE.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -87,7 +98,7 @@ def save_token(tok):
 
 
 def login():
-    flow = post_form(f"{AUTHORITY}/devicecode", {"client_id": client_id(), "scope": SCOPES})
+    flow = post_form(f"{AUTHORITY}/devicecode", {"client_id": client_id(), "scope": LOGIN_SCOPES})
     if "device_code" not in flow:
         raise Fail(f"device code request failed: {flow.get('error_description', flow)}")
     print(flow["message"], file=sys.stderr, flush=True)
@@ -101,7 +112,9 @@ def login():
             "device_code": flow["device_code"],
         })
         if "access_token" in tok:
-            save_token(tok)
+            # The access token is for only one of the two APIs, so keep just
+            # the refresh token and fetch access tokens per API on demand.
+            save_token({"refresh_token": tok["refresh_token"]})
             return {"status": "logged_in"}
         if tok.get("error") == "slow_down":
             interval += 5
@@ -110,30 +123,42 @@ def login():
     raise Fail("login timed out")
 
 
-def access_token():
+def access_token(scopes=SCOPES):
+    """Access token for Graph (default) or, with TODO_SCOPES, the To Do API."""
     if not TOKEN_FILE.exists():
         raise Fail("not logged in: run `mstodo login` once (needs the user to enter a code)")
     tok = json.loads(TOKEN_FILE.read_text())
-    if time.time() < tok.get("expires_at", 0):
-        return tok["access_token"]
+    # The Graph token sits at the top level, as in token files written before
+    # My Day support; the To Do API token sits under "todo".
+    cached = tok if scopes == SCOPES else tok.get("todo", {})
+    if time.time() < cached.get("expires_at", 0):
+        return cached["access_token"]
     new = post_form(f"{AUTHORITY}/token", {
         "grant_type": "refresh_token",
         "client_id": client_id(),
         "refresh_token": tok["refresh_token"],
-        "scope": SCOPES,
+        "scope": scopes,
     })
     if "access_token" not in new:
-        raise Fail(f"token refresh failed, run `mstodo login` again: {new.get('error_description', new)}")
-    new.setdefault("refresh_token", tok["refresh_token"])
-    save_token(new)
-    return new["access_token"]
+        detail = new.get("error_description", new)
+        if scopes == SCOPES:
+            raise Fail(f"token refresh failed, run `mstodo login` again: {detail}")
+        raise Fail(f"no access to My Day, run `mstodo login` again to grant it: {detail}")
+    fresh = {"access_token": new["access_token"],
+             "expires_at": time.time() + int(new.get("expires_in", 3600)) - 60}
+    if scopes == SCOPES:
+        tok.update(fresh)
+    else:
+        tok["todo"] = fresh
+    tok["refresh_token"] = new.get("refresh_token", tok["refresh_token"])
+    save_token(tok)
+    return fresh["access_token"]
 
 
-def graph(method, path, body=None):
-    url = path if path.startswith("http") else f"{GRAPH}{path}"
+def call(method, url, body=None, scopes=SCOPES):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Authorization", f"Bearer {access_token()}")
+    req.add_header("Authorization", f"Bearer {access_token(scopes)}")
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
@@ -142,7 +167,22 @@ def graph(method, path, body=None):
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
         detail = e.read().decode(errors="replace")
-        raise Fail(f"Graph {method} {path} -> {e.code}: {detail[:500]}")
+        api = "Graph" if scopes == SCOPES else "To Do API"
+        raise Fail(f"{api} {method} {url.split('?')[0]} -> {e.code}: {detail[:500]}")
+
+
+def graph(method, path, body=None):
+    return call(method, path if path.startswith("http") else f"{GRAPH}{path}", body)
+
+
+def todo_paged(path):
+    """All items of a To Do API collection. Its JSON keys are PascalCase."""
+    items, url = [], f"{TODO_API}{path}"
+    while url:
+        page = call("GET", url, scopes=TODO_SCOPES)
+        items.extend(page.get("Value", []))
+        url = page.get("NextLink")
+    return items
 
 
 def paged(path):
@@ -208,6 +248,40 @@ def cmd_tasks(a):
     return out
 
 
+def today():
+    """Today's date in TIMEZONE; My Day is the tasks committed to this date."""
+    try:
+        return datetime.datetime.now(zoneinfo.ZoneInfo(TIMEZONE)).date()
+    except Exception:  # a zone name zoneinfo does not know, or no tz database
+        return datetime.date.today()
+
+
+def cmd_my_day(a):
+    # The apps store "in My Day" as CommittedDay = that day at midnight UTC,
+    # so yesterday's tasks drop out without anything being reset.
+    flt = f"CommittedDay eq {today().isoformat()}T00:00:00Z"
+    if not a.all:
+        flt += " and Status ne 'Completed'"
+    tasks = todo_paged("/tasks?$filter=" + urllib.parse.quote(flt))
+    names = {f["Id"]: f["Name"] for f in todo_paged("/taskfolders")}
+    # The apps show My Day by CommittedOrder, newest first.
+    tasks.sort(key=lambda t: t.get("CommittedOrder") or "", reverse=True)
+    out = []
+    for t in tasks:
+        status = t["Status"]
+        item = {"id": t["Id"], "title": t["Subject"], "list": names.get(t["ParentFolderId"], ""),
+                "status": status[0].lower() + status[1:]}
+        if t.get("Importance") == "High":
+            item["important"] = True
+        if t.get("DueDateTime"):
+            item["due"] = t["DueDateTime"]["DateTime"][:10]
+        note = ((t.get("Body") or {}).get("Content") or "").strip()
+        if note:
+            item["note"] = note[:300]
+        out.append(item)
+    return out
+
+
 def cmd_add(a):
     l = find_list(a.list, create=a.create_list)
     task = {"title": a.title}
@@ -245,6 +319,9 @@ def main():
     t.add_argument("--list")
     t.add_argument("--all", action="store_true", help="include completed tasks")
     t.set_defaults(fn=cmd_tasks)
+    md = sub.add_parser("my-day", help="tasks in My Day today")
+    md.add_argument("--all", action="store_true", help="include completed tasks")
+    md.set_defaults(fn=cmd_my_day)
     ad = sub.add_parser("add")
     ad.add_argument("title")
     ad.add_argument("--list", help="list (project) name; default list if omitted")

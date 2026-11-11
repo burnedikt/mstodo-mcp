@@ -16,7 +16,8 @@ server = MCPServer(
     "microsoft-todo",
     instructions=(
         "Manages the user's Microsoft To Do. A project is a To Do list. "
-        "Without a list name, tasks go to the default list. Convert relative "
+        "Without a list name, tasks go to the default list. My Day is the "
+        "user's hand-picked plan for today, not a list. Convert relative "
         f"dates to YYYY-MM-DD in {mstodo.TIMEZONE}, and only set a due date or "
         "reminder when the user asked for one."
     ),
@@ -27,11 +28,12 @@ def run(fn, **args):
     try:
         return fn(SimpleNamespace(**args))
     except mstodo.Fail as e:
-        if str(e).startswith(("not logged in", "token refresh failed")):
+        if str(e).startswith(("not logged in", "token refresh failed", "no access to My Day")):
             raise ToolError(
-                "Microsoft To Do is not signed in. Tell the user to run "
-                "`mstodo login` once where this server runs; you cannot "
-                "complete the sign-in yourself."
+                "Microsoft To Do is not signed in, or the sign-in predates "
+                "My Day support. Tell the user to run `mstodo login` once "
+                "where this server runs; you cannot complete the sign-in "
+                "yourself."
             ) from None
         raise ToolError(str(e)) from None
 
@@ -49,6 +51,16 @@ def list_tasks(list: str | None = None, include_completed: bool = False) -> list
     `list` matches case-insensitively, then by prefix, then by substring.
     """
     return run(mstodo.cmd_tasks, list=list, all=include_completed)
+
+
+@server.tool()
+def list_my_day(include_completed: bool = False) -> list[dict]:
+    """List the tasks in My Day today, in the order the To Do app shows them.
+
+    Use this for "what's on my plate today". My Day is not a list: each task
+    also names the list it lives in, which complete_task needs.
+    """
+    return run(mstodo.cmd_my_day, all=include_completed)
 
 
 @server.tool()
