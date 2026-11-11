@@ -5,8 +5,8 @@
 Microsoft To Do for a personal Microsoft account, through Microsoft Graph:
 
 - `mstodo-mcp`: a stdio [MCP](https://modelcontextprotocol.io) server with the
-  tools `list_lists`, `list_tasks`, `add_task`, `complete_task` and
-  `create_list`
+  tools `list_lists`, `list_tasks`, `list_my_day`, `add_task`,
+  `complete_task` and `create_list`
 - `mstodo`: a CLI for the same operations, plus the one-time `login`
 
 It signs in with the device-code flow and Microsoft's public "Microsoft Graph
@@ -55,6 +55,7 @@ Every command prints JSON.
 mstodo lists                                  # all lists
 mstodo tasks                                  # open tasks across all lists
 mstodo tasks --list "Garden"                  # open tasks in one list
+mstodo my-day                                 # tasks in My Day today
 mstodo add "Buy screws" --list "Garden"       # add to a list
 mstodo add "Call the tax advisor" --due 2026-10-09 --important
 mstodo add "Pay rent" --remind "2026-11-01 08:00"
@@ -65,6 +66,18 @@ mstodo create-list "Garden"
 Without `--list`, tasks go to the default list. List names match
 case-insensitively, then by prefix, then by substring.
 
+### My Day
+
+Microsoft Graph does not expose My Day, so `mstodo my-day` and `list_my_day`
+read it from the undocumented API that the To Do apps themselves use
+(`substrate.office.com/todob2`). It works today, but Microsoft may change or
+remove it without notice; the other commands only use Graph and are not
+affected. "Today" is the current date in `MSTODO_TIMEZONE`. Add `--all` to
+include tasks already completed today.
+
+If you signed in before My Day support existed, run `mstodo login` again once
+to grant access to that API.
+
 ## Configuration
 
 | Variable            | Default                | Purpose                                      |
@@ -73,7 +86,8 @@ case-insensitively, then by prefix, then by substring.
 | `MSTODO_CLIENT_ID`  | Graph CLI Tools client | Use your own public client registration      |
 | `MSTODO_TIMEZONE`   | local time zone or UTC | IANA time zone for due dates and reminders   |
 
-The sign-in requests `Tasks.ReadWrite` and `offline_access`. The refresh token
+The sign-in requests `Tasks.ReadWrite` for Microsoft Graph and for Outlook
+(the To Do apps' API, used for My Day), plus `offline_access`. The refresh token
 is renewed on use and expires after 90 days without use; run `mstodo login`
 again then. Revoke access at <https://account.live.com/consent/Manage>.
 
