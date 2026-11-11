@@ -1,6 +1,6 @@
 [project]
 name = "mstodo-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Microsoft To Do for personal accounts as a stdio MCP server and CLI"
 readme = "README.md"
 license = "MIT"

@@ -44,7 +44,7 @@ For clients configured with JSON (Claude Desktop, Cursor, ...):
 }
 ```
 
-Append a tag such as `@v0.1.0` to the URL to pin a release. The server and
+Append a tag such as `@v0.2.0` to the URL to pin a release. The server and
 `mstodo login` must use the same config directory.
 
 ## CLI
