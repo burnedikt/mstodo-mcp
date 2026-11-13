@@ -83,13 +83,42 @@ to grant access to that API.
 | Variable            | Default                | Purpose                                      |
 | ------------------- | ---------------------- | -------------------------------------------- |
 | `MSTODO_CONFIG_DIR` | `~/.config/mstodo`     | Refresh token (`token.json`, mode 600)       |
-| `MSTODO_CLIENT_ID`  | Graph CLI Tools client | Use your own public client registration      |
+| `MSTODO_CLIENT_ID`  | Graph CLI Tools client | Your own app registration, see below         |
 | `MSTODO_TIMEZONE`   | local time zone or UTC | IANA time zone for due dates and reminders   |
 
 The sign-in requests `Tasks.ReadWrite` for Microsoft Graph and for Outlook
 (the To Do apps' API, used for My Day), plus `offline_access`. The refresh token
 is renewed on use and expires after 90 days without use; run `mstodo login`
 again then. Revoke access at <https://account.live.com/consent/Manage>.
+
+### Your own app registration
+
+By default the sign-in borrows Microsoft's "Microsoft Graph Command Line Tools"
+client. Microsoft retired the Graph CLI itself in August 2026; the client still
+works, but if it ever stops, or you prefer a client you control, register your
+own:
+
+1. In the [Entra admin center](https://entra.microsoft.com), go to **App
+   registrations > New registration**. Choose **Personal Microsoft accounts
+   only** and leave the redirect URI empty.
+2. Under **Authentication**, set **Allow public client flows** to **Yes**.
+3. Under **API permissions**, add the delegated Microsoft Graph permissions
+   `Tasks.ReadWrite` and `offline_access`.
+4. Sign in with the **Application (client) ID** from the overview page:
+
+```bash
+mstodo login --client-id <application-client-id>
+```
+
+The client ID is saved with the token, so the MCP server and later commands
+need no further setting. Setting `MSTODO_CLIENT_ID`, or writing the ID to
+`~/.config/mstodo/client_id`, instead makes it the default for `mstodo login`.
+To go back to Microsoft's client, unset those and run `mstodo login` again.
+
+My Day needs a second permission, for the To Do apps' own API, that the portal
+does not offer. If the sign-in with your app fails because of it, run
+`mstodo login --client-id <id> --no-my-day`: everything except My Day then
+works.
 
 `src/mstodo_mcp/mstodo.py` uses only the Python standard library, so it also
 works as a single file, e.g. copied to `/usr/local/bin/mstodo`.

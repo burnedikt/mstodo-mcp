@@ -6,7 +6,7 @@ account. Standard library only, so this file also runs on its own, e.g.
 copied to /usr/local/bin/mstodo. The MCP server (server.py) wraps the same
 functions.
 
-    mstodo login                         # one-time device-code sign-in
+    mstodo login [--client-id ID] [--no-my-day]   # one-time device-code sign-in
     mstodo lists
     mstodo tasks [--list NAME] [--all]
     mstodo my-day [--all]
@@ -16,10 +16,12 @@ functions.
     mstodo create-list NAME
 
 Output is JSON on stdout; errors are JSON on stderr with a non-zero exit.
-Config: MSTODO_CLIENT_ID or ~/.config/mstodo/client_id (public client for
-personal accounts with delegated Tasks.ReadWrite; defaults to Microsoft's
-"Microsoft Graph Command Line Tools"). The refresh token is cached in
-~/.config/mstodo/token.json (mode 600). MSTODO_CONFIG_DIR moves both.
+Config: the sign-in uses Microsoft's "Microsoft Graph Command Line Tools"
+client unless `login --client-id`, MSTODO_CLIENT_ID or
+~/.config/mstodo/client_id names your own app registration (a public client
+for personal accounts with delegated Tasks.ReadWrite). The refresh token and
+the client it belongs to are cached in ~/.config/mstodo/token.json (mode 600).
+MSTODO_CONFIG_DIR moves both files.
 Dates and reminders use MSTODO_TIMEZONE, else the local IANA time zone.
 
 Graph does not expose My Day, so `my-day` reads it from the undocumented API
@@ -69,13 +71,14 @@ class Fail(Exception):
     pass
 
 
-def client_id():
-    cid = os.environ.get("MSTODO_CLIENT_ID")
+def configured_client_id():
+    """The user's own app registration, if one is configured."""
+    cid = os.environ.get("MSTODO_CLIENT_ID", "").strip()
     if not cid:
         cfg = CONFIG_DIR / "client_id"
         if cfg.exists():
             cid = cfg.read_text().strip()
-    return cid or DEFAULT_CLIENT_ID
+    return cid or None
 
 
 def post_form(url, fields):
@@ -97,8 +100,10 @@ def save_token(tok):
     os.replace(tmp, TOKEN_FILE)
 
 
-def login():
-    flow = post_form(f"{AUTHORITY}/devicecode", {"client_id": client_id(), "scope": LOGIN_SCOPES})
+def login(client_id=None, my_day=True):
+    client_id = client_id or configured_client_id() or DEFAULT_CLIENT_ID
+    flow = post_form(f"{AUTHORITY}/devicecode", {
+        "client_id": client_id, "scope": LOGIN_SCOPES if my_day else SCOPES})
     if "device_code" not in flow:
         raise Fail(f"device code request failed: {flow.get('error_description', flow)}")
     print(flow["message"], file=sys.stderr, flush=True)
@@ -108,13 +113,15 @@ def login():
         time.sleep(interval)
         tok = post_form(f"{AUTHORITY}/token", {
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            "client_id": client_id(),
+            "client_id": client_id,
             "device_code": flow["device_code"],
         })
         if "access_token" in tok:
             # The access token is for only one of the two APIs, so keep just
             # the refresh token and fetch access tokens per API on demand.
-            save_token({"refresh_token": tok["refresh_token"]})
+            # A refresh token only works with the client it was issued to, so
+            # remember that too: the MCP server then needs no client setting.
+            save_token({"refresh_token": tok["refresh_token"], "client_id": client_id})
             return {"status": "logged_in"}
         if tok.get("error") == "slow_down":
             interval += 5
@@ -128,6 +135,12 @@ def access_token(scopes=SCOPES):
     if not TOKEN_FILE.exists():
         raise Fail("not logged in: run `mstodo login` once (needs the user to enter a code)")
     tok = json.loads(TOKEN_FILE.read_text())
+    wanted = configured_client_id()
+    # Token files written before the client was stored have no "client_id".
+    client_id = tok.get("client_id") or wanted or DEFAULT_CLIENT_ID
+    if wanted and wanted != client_id:
+        raise Fail(f"signed in with client {client_id}, but client {wanted} is configured: "
+                   "run `mstodo login` again to sign in with the configured client")
     # The Graph token sits at the top level, as in token files written before
     # My Day support; the To Do API token sits under "todo".
     cached = tok if scopes == SCOPES else tok.get("todo", {})
@@ -135,7 +148,7 @@ def access_token(scopes=SCOPES):
         return cached["access_token"]
     new = post_form(f"{AUTHORITY}/token", {
         "grant_type": "refresh_token",
-        "client_id": client_id(),
+        "client_id": client_id,
         "refresh_token": tok["refresh_token"],
         "scope": scopes,
     })
@@ -313,7 +326,12 @@ def cmd_create_list(a):
 def main():
     p = argparse.ArgumentParser(prog="mstodo", description="Microsoft To Do via Microsoft Graph")
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("login").set_defaults(fn=lambda _: login())
+    lg = sub.add_parser("login", help="one-time device-code sign-in")
+    lg.add_argument("--client-id", help="your own app registration instead of Microsoft's "
+                                        "Graph Command Line Tools client")
+    lg.add_argument("--no-my-day", action="store_true",
+                    help="sign in for Graph only, if your app is refused the To Do apps' API")
+    lg.set_defaults(fn=lambda a: login(a.client_id, not a.no_my_day))
     sub.add_parser("lists").set_defaults(fn=cmd_lists)
     t = sub.add_parser("tasks")
     t.add_argument("--list")
