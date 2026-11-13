@@ -28,12 +28,18 @@ def run(fn, **args):
     try:
         return fn(SimpleNamespace(**args))
     except mstodo.Fail as e:
-        if str(e).startswith(("not logged in", "token refresh failed", "no access to My Day")):
+        if str(e).startswith("no access to My Day"):
             raise ToolError(
-                "Microsoft To Do is not signed in, or the sign-in predates "
-                "My Day support. Tell the user to run `mstodo login` once "
-                "where this server runs; you cannot complete the sign-in "
-                "yourself."
+                "This sign-in has no access to My Day; the other tools still "
+                "work. Tell the user that running `mstodo login` where this "
+                "server runs grants it, unless their own app registration is "
+                "refused that API; you cannot complete the sign-in yourself."
+            ) from None
+        if str(e).startswith(("not logged in", "token refresh failed", "signed in with client")):
+            raise ToolError(
+                "Microsoft To Do is not signed in. Tell the user to run "
+                "`mstodo login` once where this server runs; you cannot "
+                "complete the sign-in yourself."
             ) from None
         raise ToolError(str(e)) from None
 
